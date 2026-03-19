@@ -1,5 +1,5 @@
 // Database
-export { getDb, getSettingsTable, ensureTable, closeDb } from "./db";
+export { getDb, getSettingsTable, getLocationsTable, ensureTable, ensureLocationsTable, closeDb } from "./db";
 
 // Settings CRUD
 export {
@@ -12,6 +12,10 @@ export {
 	listSettingsForDisplay,
 } from "./settings";
 export type { Setting, SetSettingOptions } from "./settings";
+
+// Session Locations
+export { addSessionLocation, getSessionLocations } from "./locations";
+export type { SessionLocation, AddSessionLocationData, GetSessionLocationsOptions } from "./locations";
 
 // Encryption
 export { encrypt, decrypt, isEncryptedFormat } from "./crypto";
