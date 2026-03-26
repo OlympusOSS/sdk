@@ -45,7 +45,7 @@ export async function getSettingOrDefault(
 	fallback: string,
 ): Promise<string> {
 	const value = await getSetting(key);
-	return value ?? fallback;
+	return value || fallback;
 }
 
 /**
