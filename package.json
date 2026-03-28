@@ -18,6 +18,9 @@
 		"package.json",
 		"tsconfig.json"
 	],
+	"scripts": {
+		"test": "bun test"
+	},
 	"license": "MIT",
 	"dependencies": {
 		"postgres": "^3.4.7"
