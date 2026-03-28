@@ -1,29 +1,29 @@
 {
-  "name": "@olympusoss/sdk",
-  "version": "1.0.26",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
-  "exports": {
-    ".": "./src/index.ts"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/OlympusOSS/sdk.git"
-  },
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
-  },
-  "files": [
-    "src",
-    "package.json",
-    "tsconfig.json"
-  ],
-  "license": "MIT",
-  "dependencies": {
-    "postgres": "^3.4.7"
-  },
-  "devDependencies": {
-    "@types/node": "^25.0.9",
-    "typescript": "^5.9.3"
-  }
+	"name": "@olympusoss/sdk",
+	"version": "1.0.26",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/OlympusOSS/sdk.git"
+	},
+	"publishConfig": {
+		"registry": "https://npm.pkg.github.com"
+	},
+	"files": [
+		"src",
+		"package.json",
+		"tsconfig.json"
+	],
+	"license": "MIT",
+	"dependencies": {
+		"postgres": "^3.4.7"
+	},
+	"devDependencies": {
+		"@types/node": "^25.0.9",
+		"typescript": "^5.9.3"
+	}
 }
