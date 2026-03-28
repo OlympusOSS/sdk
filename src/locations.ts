@@ -30,9 +30,18 @@ export interface GetSessionLocationsOptions {
 	limit?: number;
 }
 
+/** Default retention period in days */
+const DEFAULT_RETENTION_DAYS = 90;
+
+/** Probability (0-1) of running cleanup after each insert */
+const CLEANUP_PROBABILITY = 0.01;
+
 /**
  * Insert a session location record.
  * Called by Hera on login/registration to record the user's IP and/or browser location.
+ *
+ * Opportunistically triggers cleanup of expired rows (~1% of inserts)
+ * to keep the table bounded without requiring a separate scheduled job.
  */
 export async function addSessionLocation(data: AddSessionLocationData): Promise<void> {
 	await ensureLocationsTable();
@@ -53,6 +62,41 @@ export async function addSessionLocation(data: AddSessionLocationData): Promise<
 			data.source,
 		],
 	);
+
+	// Probabilistic cleanup: ~1% of inserts trigger retention enforcement.
+	// Fire-and-forget so it never slows down the login path.
+	if (Math.random() < CLEANUP_PROBABILITY) {
+		cleanupOldLocations().catch(() => {
+			/* swallow — cleanup is best-effort */
+		});
+	}
+}
+
+/**
+ * Delete session_locations rows older than the retention period.
+ *
+ * Can be called directly on a schedule (e.g. from Athena cron endpoint)
+ * or is invoked opportunistically after ~1% of inserts.
+ *
+ * @param retentionDays - Number of days to retain (default: 90)
+ * @returns The number of rows deleted
+ */
+export async function cleanupOldLocations(retentionDays: number = DEFAULT_RETENTION_DAYS): Promise<number> {
+	if (retentionDays < 1) {
+		throw new Error("retentionDays must be at least 1");
+	}
+
+	await ensureLocationsTable();
+	const db = getDb();
+	const table = getLocationsTable();
+
+	const result = await db.unsafe(
+		`DELETE FROM ${table}
+		 WHERE created_at < NOW() - INTERVAL '1 day' * $1`,
+		[retentionDays],
+	);
+
+	return result.count;
 }
 
 /**

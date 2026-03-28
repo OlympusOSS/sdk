@@ -45,7 +45,7 @@ export async function getSettingOrDefault(
 	fallback: string,
 ): Promise<string> {
 	const value = await getSetting(key);
-	return value || fallback;
+	return value ?? fallback;
 }
 
 /**
@@ -64,7 +64,12 @@ export async function getSecretSetting(key: string): Promise<string | null> {
 
 	const row = rows[0];
 	if (row.encrypted) {
-		return decrypt(row.value as string);
+		try {
+			return decrypt(row.value as string);
+		} catch (error) {
+			console.error(`Failed to decrypt setting "${key}":`, error);
+			return null;
+		}
 	}
 	return row.value as string;
 }

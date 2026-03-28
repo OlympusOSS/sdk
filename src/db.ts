@@ -106,6 +106,12 @@ export async function ensureLocationsTable(): Promise<void> {
 		ON ${table} (source, created_at DESC)
 	`);
 
+	// Index for efficient retention cleanup (DELETE WHERE created_at < ?)
+	await db.unsafe(`
+		CREATE INDEX IF NOT EXISTS idx_${table}_created_at
+		ON ${table} (created_at)
+	`);
+
 	locationsMigrated = true;
 }
 

@@ -14,7 +14,7 @@ export {
 export type { Setting, SetSettingOptions } from "./settings";
 
 // Session Locations
-export { addSessionLocation, getSessionLocations } from "./locations";
+export { addSessionLocation, getSessionLocations, cleanupOldLocations } from "./locations";
 export type { SessionLocation, AddSessionLocationData, GetSessionLocationsOptions } from "./locations";
 
 // Encryption

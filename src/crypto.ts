@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 const ALGORITHM = "aes-256-gcm";
-const IV_LENGTH = 16;
+const IV_LENGTH = 12; // NIST SP 800-38D recommended 96-bit IV for AES-GCM
 
 function getEncryptionKey(): Buffer {
 	const key = process.env.ENCRYPTION_KEY;
@@ -34,8 +34,13 @@ export function encrypt(plaintext: string): string {
  * Decrypts a value that was encrypted with AES-256-GCM.
  * Format expected: iv:authTag:encryptedData (all base64 encoded)
  *
+ * Supports both legacy 16-byte IVs and current 12-byte IVs for
+ * backward compatibility with existing encrypted data.
+ *
  * If the value doesn't match the encrypted format, returns it as-is
  * for backwards compatibility with plain-text env vars.
+ *
+ * Throws on decryption failure to prevent ciphertext leaking to callers.
  */
 export function decrypt(encryptedValue: string): string {
 	if (!encryptedValue) return "";
@@ -47,23 +52,18 @@ export function decrypt(encryptedValue: string): string {
 		return encryptedValue;
 	}
 
-	try {
-		const [ivBase64, authTagBase64, encryptedData] = parts;
-		const key = getEncryptionKey();
-		const iv = Buffer.from(ivBase64, "base64");
-		const authTag = Buffer.from(authTagBase64, "base64");
+	const [ivBase64, authTagBase64, encryptedData] = parts;
+	const key = getEncryptionKey();
+	const iv = Buffer.from(ivBase64, "base64");
+	const authTag = Buffer.from(authTagBase64, "base64");
 
-		const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-		decipher.setAuthTag(authTag);
+	const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+	decipher.setAuthTag(authTag);
 
-		let decrypted = decipher.update(encryptedData, "base64", "utf8");
-		decrypted += decipher.final("utf8");
+	let decrypted = decipher.update(encryptedData, "base64", "utf8");
+	decrypted += decipher.final("utf8");
 
-		return decrypted;
-	} catch (error) {
-		console.error("Decryption failed, returning value as-is:", error);
-		return encryptedValue;
-	}
+	return decrypted;
 }
 
 /**
