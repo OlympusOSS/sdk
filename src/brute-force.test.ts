@@ -92,6 +92,7 @@ const {
 	checkLockout,
 	recordFailedAttempt,
 	clearAttempts,
+	listLockedAccounts,
 	unlockAccount,
 	appendAuditLog,
 } = await import("./brute-force");
@@ -323,6 +324,87 @@ describe("clearAttempts", () => {
 		ensureBruteForceTablesError = new Error("no tables");
 
 		await expect(clearAttempts("user@example.com")).resolves.toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// listLockedAccounts
+// ---------------------------------------------------------------------------
+
+describe("listLockedAccounts", () => {
+	test("returns empty array when no active lockouts exist", async () => {
+		mockDbResults = [[]]; // DB returns zero rows
+
+		const result = await listLockedAccounts();
+
+		expect(result).toEqual([]);
+	});
+
+	test("returns all rows when active lockouts exist", async () => {
+		const now = new Date();
+		const lockedUntil1 = new Date(now.getTime() + 900_000).toISOString();
+		const lockedUntil2 = new Date(now.getTime() + 300_000).toISOString();
+
+		const rows = [
+			{
+				id: 1,
+				identifier: "user1@example.com",
+				identity_id: "uuid-001",
+				locked_at: now.toISOString(),
+				locked_until: lockedUntil1,
+				lock_reason: "brute_force",
+				auto_threshold_at: 5,
+			},
+			{
+				id: 2,
+				identifier: "user2@example.com",
+				identity_id: null,
+				locked_at: now.toISOString(),
+				locked_until: lockedUntil2,
+				lock_reason: "brute_force",
+				auto_threshold_at: null,
+			},
+		];
+		mockDbResults = [rows];
+
+		const result = await listLockedAccounts();
+
+		expect(result).toHaveLength(2);
+		expect(result[0]).toMatchObject({ id: 1, identifier: "user1@example.com" });
+		expect(result[1]).toMatchObject({ id: 2, identifier: "user2@example.com" });
+	});
+
+	test("passes through the DB result unchanged (SQL filter is in the query)", async () => {
+		// The WHERE clause (locked_until > NOW() AND unlocked_at IS NULL) runs in Postgres.
+		// The function must return exactly what the mock returns — no client-side filtering.
+		const row = {
+			id: 3,
+			identifier: "user3@example.com",
+			identity_id: "uuid-003",
+			locked_at: new Date().toISOString(),
+			locked_until: new Date(Date.now() + 600_000).toISOString(),
+			lock_reason: "brute_force",
+			auto_threshold_at: null,
+		};
+		mockDbResults = [[row]];
+
+		const result = await listLockedAccounts();
+
+		expect(result).toHaveLength(1);
+		expect(result[0]).toMatchObject(row);
+	});
+
+	test("calls ensureBruteForceTables before querying the DB", async () => {
+		mockDbResults = [[]];
+
+		// If ensureBruteForceTables throws, the function should propagate the error
+		// rather than proceeding to query an unmigrated table.
+		ensureBruteForceTablesError = new Error("migration failed");
+
+		await expect(listLockedAccounts()).rejects.toThrow("migration failed");
+
+		// The DB must not have been queried after the migration failure.
+		expect(dbUnsafeCalls.length).toBe(0);
 	});
 });
 
