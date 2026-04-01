@@ -217,6 +217,16 @@ describe("checkLockout", () => {
 
 		expect(result.locked).toBe(false);
 	});
+
+	// E1: empty/whitespace identifier guard
+	test("returns { locked: false } without hitting the DB for a whitespace-only identifier", async () => {
+		const result = await checkLockout("   ");
+
+		expect(result.locked).toBe(false);
+		expect(result.lockedUntil).toBeUndefined();
+		// No DB call should have been made.
+		expect(dbUnsafeCalls.length).toBe(0);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -287,6 +297,16 @@ describe("recordFailedAttempt", () => {
 		expect(result.shouldLockout).toBe(false);
 		expect(result.attemptCount).toBe(0);
 	});
+
+	// E1: empty/whitespace identifier guard
+	test("returns { shouldLockout: false, attemptCount: 0 } without hitting the DB for a whitespace-only identifier", async () => {
+		const result = await recordFailedAttempt("   ", "1.2.3.4");
+
+		expect(result.shouldLockout).toBe(false);
+		expect(result.attemptCount).toBe(0);
+		// No DB call should have been made.
+		expect(dbUnsafeCalls.length).toBe(0);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -324,6 +344,13 @@ describe("clearAttempts", () => {
 		ensureBruteForceTablesError = new Error("no tables");
 
 		await expect(clearAttempts("user@example.com")).resolves.toBeUndefined();
+	});
+
+	// E1: empty/whitespace identifier guard
+	test("returns early without hitting the DB for a whitespace-only identifier", async () => {
+		await expect(clearAttempts("   ")).resolves.toBeUndefined();
+		// No DB call should have been made.
+		expect(dbUnsafeCalls.length).toBe(0);
 	});
 });
 
@@ -495,6 +522,31 @@ describe("unlockAccount", () => {
 		const result = await unlockAccount("user@example.com", "admin-uuid");
 
 		expect(result).toBe(false);
+	});
+
+	// E1: empty/whitespace identifier guard
+	test("returns false without hitting the DB for a whitespace-only identifier", async () => {
+		const result = await unlockAccount("   ", "admin-uuid");
+
+		expect(result).toBe(false);
+		// No DB call should have been made.
+		expect(dbUnsafeCalls.length).toBe(0);
+	});
+
+	// E2: unlockAccount must not unlock already-expired lockouts
+	test("returns false when the only matching row is an expired lockout (locked_until in the past)", async () => {
+		// The SELECT query now includes AND locked_until > NOW(), so an expired lockout
+		// returns no rows — simulate that by having the mock return an empty array.
+		mockDbResults = [[]];
+
+		const result = await unlockAccount("user@example.com", "admin-uuid");
+
+		expect(result).toBe(false);
+		// Confirm the SELECT was actually issued (one DB call) and no UPDATE followed.
+		expect(dbUnsafeCalls.length).toBe(1);
+		const selectCall = dbUnsafeCalls[0];
+		expect(selectCall.sql).toContain("SELECT");
+		expect(selectCall.sql).toContain("locked_until > NOW()");
 	});
 });
 
