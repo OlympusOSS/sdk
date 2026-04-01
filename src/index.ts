@@ -1,5 +1,16 @@
 // Database
-export { getDb, getSettingsTable, getLocationsTable, ensureTable, ensureLocationsTable, closeDb } from "./db";
+export {
+	getDb,
+	getSettingsTable,
+	getLocationsTable,
+	getLoginAttemptsTable,
+	getLockoutsTable,
+	getSecurityAuditTable,
+	ensureTable,
+	ensureLocationsTable,
+	ensureBruteForceTables,
+	closeDb,
+} from "./db";
 
 // Settings CRUD
 export {
@@ -22,3 +33,21 @@ export { encrypt, decrypt, isEncryptedFormat } from "./crypto";
 
 // Cache
 export { SettingsCache, settingsCache } from "./cache";
+
+// Brute force protection
+export {
+	getBruteForceConfig,
+	checkLockout,
+	recordFailedAttempt,
+	clearAttempts,
+	listLockedAccounts,
+	unlockAccount,
+	appendAuditLog,
+} from "./brute-force";
+export type {
+	BruteForceConfig,
+	LockoutState,
+	LockedAccount,
+	LoginAttempt,
+	AuditLogEvent,
+} from "./brute-force";
