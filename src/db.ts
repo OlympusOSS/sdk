@@ -3,6 +3,7 @@ import postgres from "postgres";
 let sql: ReturnType<typeof postgres> | null = null;
 let migrated = false;
 let locationsMigrated = false;
+let bruteForceTablesMigrated = false;
 
 /**
  * Returns a shared postgres.js connection pool.
@@ -116,6 +117,112 @@ export async function ensureLocationsTable(): Promise<void> {
 }
 
 /**
+ * Returns the domain-scoped login attempts table name.
+ * Derived from SETTINGS_TABLE: "ciam_settings" → "ciam_login_attempts".
+ */
+export function getLoginAttemptsTable(): string {
+	const settingsTable = getSettingsTable();
+	return settingsTable.replace(/_settings$/, "_login_attempts");
+}
+
+/**
+ * Returns the domain-scoped lockouts table name.
+ * Derived from SETTINGS_TABLE: "ciam_settings" → "ciam_lockouts".
+ */
+export function getLockoutsTable(): string {
+	const settingsTable = getSettingsTable();
+	return settingsTable.replace(/_settings$/, "_lockouts");
+}
+
+/**
+ * Returns the domain-scoped security audit log table name.
+ * Derived from SETTINGS_TABLE: "ciam_settings" → "ciam_security_audit_log".
+ */
+export function getSecurityAuditTable(): string {
+	const settingsTable = getSettingsTable();
+	return settingsTable.replace(/_settings$/, "_security_audit_log");
+}
+
+/**
+ * Auto-creates the three brute-force protection tables if they don't exist.
+ * Runs once per process lifetime, idempotent via CREATE TABLE IF NOT EXISTS.
+ *
+ * Tables created:
+ *   - {prefix}_login_attempts  — one row per failed attempt (sliding window)
+ *   - {prefix}_lockouts        — explicit lockout state (append-only on unlock)
+ *   - {prefix}_security_audit_log — append-only admin action audit log
+ */
+export async function ensureBruteForceTables(): Promise<void> {
+	if (bruteForceTablesMigrated) return;
+
+	const db = getDb();
+	const attemptsTable = getLoginAttemptsTable();
+	const lockoutsTable = getLockoutsTable();
+	const auditTable = getSecurityAuditTable();
+
+	// login_attempts: append-only per-identifier failed login records
+	await db.unsafe(`
+		CREATE TABLE IF NOT EXISTS ${attemptsTable} (
+			id           BIGSERIAL PRIMARY KEY,
+			identifier   TEXT NOT NULL,
+			ip_address   INET,
+			attempt_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)
+	`);
+
+	await db.unsafe(`
+		CREATE INDEX IF NOT EXISTS idx_${attemptsTable}_identifier_time
+		ON ${attemptsTable} (identifier, attempt_time DESC)
+	`);
+
+	await db.unsafe(`
+		CREATE INDEX IF NOT EXISTS idx_${attemptsTable}_attempt_time
+		ON ${attemptsTable} (attempt_time)
+	`);
+
+	// lockouts: explicit lockout state; rows kept on unlock for audit history
+	await db.unsafe(`
+		CREATE TABLE IF NOT EXISTS ${lockoutsTable} (
+			id                   BIGSERIAL PRIMARY KEY,
+			identifier           TEXT NOT NULL,
+			identity_id          TEXT,
+			locked_at            TIMESTAMPTZ DEFAULT NOW(),
+			locked_until         TIMESTAMPTZ,
+			unlocked_at          TIMESTAMPTZ,
+			unlock_reason        TEXT,
+			unlocked_by_admin_id TEXT,
+			lock_reason          TEXT DEFAULT 'brute_force',
+			auto_threshold_at    SMALLINT
+		)
+	`);
+
+	await db.unsafe(`
+		CREATE INDEX IF NOT EXISTS idx_${lockoutsTable}_identifier_locked_until
+		ON ${lockoutsTable} (identifier, locked_until DESC)
+	`);
+
+	// security_audit_log: append-only log of security-relevant admin actions
+	await db.unsafe(`
+		CREATE TABLE IF NOT EXISTS ${auditTable} (
+			id                BIGSERIAL PRIMARY KEY,
+			event_type        TEXT NOT NULL,
+			identifier        TEXT,
+			identity_id       TEXT,
+			admin_identity_id TEXT,
+			metadata          JSONB,
+			created_at        TIMESTAMPTZ DEFAULT NOW()
+		)
+	`);
+
+	await db.unsafe(`
+		CREATE INDEX IF NOT EXISTS idx_${auditTable}_identifier_created
+		ON ${auditTable} (identifier, created_at DESC)
+	`);
+
+	bruteForceTablesMigrated = true;
+}
+
+/**
  * Gracefully close the connection pool (for clean shutdown).
  */
 export async function closeDb() {
@@ -124,5 +231,6 @@ export async function closeDb() {
 		sql = null;
 		migrated = false;
 		locationsMigrated = false;
+		bruteForceTablesMigrated = false;
 	}
 }
