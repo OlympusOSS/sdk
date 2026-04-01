@@ -179,6 +179,11 @@ export async function getBruteForceConfig(): Promise<BruteForceConfig> {
 export async function checkLockout(identifier: string): Promise<LockoutState> {
 	const normalized = normalizeIdentifier(identifier);
 
+	if (!normalized) {
+		// empty/whitespace identifier — cannot create or look up a meaningful lockout
+		return { locked: false };
+	}
+
 	try {
 		await ensureBruteForceTables();
 		const db = getDb();
@@ -239,6 +244,11 @@ export async function recordFailedAttempt(
 	ipAddress?: string | null,
 ): Promise<{ shouldLockout: boolean; attemptCount: number }> {
 	const normalized = normalizeIdentifier(identifier);
+
+	if (!normalized) {
+		// empty/whitespace identifier — cannot create or look up a meaningful lockout
+		return { shouldLockout: false, attemptCount: 0 };
+	}
 
 	try {
 		await ensureBruteForceTables();
@@ -330,6 +340,11 @@ export async function recordFailedAttempt(
 export async function clearAttempts(identifier: string): Promise<void> {
 	const normalized = normalizeIdentifier(identifier);
 
+	if (!normalized) {
+		// empty/whitespace identifier — cannot create or look up a meaningful lockout
+		return;
+	}
+
 	try {
 		await ensureBruteForceTables();
 		const db = getDb();
@@ -393,16 +408,24 @@ export async function unlockAccount(
 ): Promise<boolean> {
 	const normalized = normalizeIdentifier(identifier);
 
+	if (!normalized) {
+		// empty/whitespace identifier — cannot create or look up a meaningful lockout
+		return false;
+	}
+
 	await ensureBruteForceTables();
 	const db = getDb();
 	const table = getLockoutsTable();
 
-	// Fetch the active lockout first so we can capture metadata for the audit log
+	// Fetch the active lockout first so we can capture metadata for the audit log.
+	// The AND locked_until > NOW() guard ensures we only unlock accounts that are
+	// actively locked — not ones whose lockout has already expired naturally.
 	const existing = await db.unsafe(
 		`SELECT id, identity_id, locked_until, lock_reason
 		 FROM ${table}
 		 WHERE identifier = $1
 		   AND unlocked_at IS NULL
+		   AND locked_until > NOW()
 		 ORDER BY locked_at DESC
 		 LIMIT 1`,
 		[normalized],
