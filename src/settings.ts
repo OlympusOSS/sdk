@@ -156,3 +156,90 @@ export async function listSettingsForDisplay(
 		value: s.encrypted ? `${s.value.slice(0, 8)}${"•".repeat(8)}` : s.value,
 	}));
 }
+
+export interface BatchSettingEntry {
+	key: string;
+	value: string;
+	encrypted?: boolean;
+	category?: string;
+}
+
+/**
+ * Atomically write multiple settings in a single Postgres transaction.
+ * Either all writes commit or none do.
+ *
+ * Reuses the same upsert logic as setSetting() for each entry.
+ * Cache entries for all written keys are invalidated after a successful commit.
+ *
+ * **Concurrent write behavior**: This transaction runs under READ COMMITTED isolation.
+ * Concurrent calls to batchSetSettings() targeting overlapping keys will interleave
+ * at the row level — PostgreSQL's ON CONFLICT upsert serializes individual row writes,
+ * but there is no cross-call ordering guarantee across concurrent transactions. Callers
+ * requiring strict last-write-wins ordering across concurrent batch operations must
+ * coordinate at the application layer (e.g., serialized queue or distributed lock).
+ *
+ * **Empty-value encryption behavior**: Entries with `encrypted: true` and `value: ""`
+ * will store an empty string — crypto.ts `encrypt()` returns `""` for empty input without
+ * performing encryption. Callers must ensure that any entry marked encrypted has a
+ * non-empty value before calling this function.
+ *
+ * **Post-commit staleness window**: After a successful commit, cache entries for the
+ * written keys are invalidated immediately. However, other SDK consumers in separate
+ * processes share no in-memory cache, so they may serve stale values for up to the TTL
+ * window (default 60s). Security-sensitive settings (e.g., `mfa.enabled` set to `false`)
+ * may continue to be read as their prior value from cache for up to 60s after a successful
+ * batch commit. Design callers of security-critical settings accordingly.
+ *
+ * **Max batch size**: No upper bound is enforced in this function. If any caller can
+ * produce a batch exceeding 20 entries, an upper bound guard should be added at the
+ * call site. This is tracked as a confirmation gate in athena#48.
+ *
+ * @param entries - Array of settings to write atomically.
+ * @param table - The settings table to write to (`ciam_settings` or `iam_settings`).
+ *   Must match lowercase letters and underscores only (SQL injection guard).
+ *   // @future: consider domain-scoped wrapper if widely consumed
+ */
+export async function batchSetSettings(
+	entries: BatchSettingEntry[],
+	table: string,
+): Promise<void> {
+	if (entries.length === 0) return;
+
+	// Validate table name to prevent SQL injection (same pattern as getSettingsTable)
+	if (!/^[a-z_]+$/.test(table)) {
+		throw new Error(`Invalid table name: ${table}`);
+	}
+
+	await ensureTable();
+	const sql = getDb();
+
+	try {
+		await sql.begin(async (tx) => {
+			for (const entry of entries) {
+				const isEncrypted = entry.encrypted ?? false;
+				const category = entry.category ?? "general";
+				const storedValue = isEncrypted ? encrypt(entry.value) : entry.value;
+
+				await tx.unsafe(
+					`INSERT INTO ${table} (key, value, encrypted, category, updated_at)
+					 VALUES ($1, $2, $3, $4, NOW())
+					 ON CONFLICT (key) DO UPDATE SET
+					   value = EXCLUDED.value,
+					   encrypted = EXCLUDED.encrypted,
+					   category = EXCLUDED.category,
+					   updated_at = NOW()`,
+					[entry.key, storedValue, isEncrypted, category],
+				);
+			}
+		});
+	} catch (error) {
+		throw new Error(
+			`batchSetSettings failed — transaction rolled back: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	// Invalidate cache for all written keys after successful commit
+	for (const entry of entries) {
+		settingsCache.invalidate(entry.key);
+	}
+}

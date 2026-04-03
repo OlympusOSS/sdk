@@ -18,11 +18,12 @@ export {
 	getSettingOrDefault,
 	getSecretSetting,
 	setSetting,
+	batchSetSettings,
 	deleteSetting,
 	listSettings,
 	listSettingsForDisplay,
 } from "./settings";
-export type { Setting, SetSettingOptions } from "./settings";
+export type { Setting, SetSettingOptions, BatchSettingEntry } from "./settings";
 
 // Session Locations
 export { addSessionLocation, getSessionLocations, cleanupOldLocations } from "./locations";
