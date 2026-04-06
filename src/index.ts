@@ -18,11 +18,36 @@
 // they appear on the blocklist. See README for key generation guidance.
 import { ENCRYPTION_KEY_BLOCKLIST } from "./blocklist";
 
+/**
+ * Emits a structured analytics event to stderr.
+ *
+ * Delivery mechanism: process.stderr.write(JSON.stringify(...) + '\n')
+ * This has zero SDK dependency and fires even when SDK initialization fails.
+ * The analytics pipeline ingests these structured lines from the container log stream.
+ * NODE_ENV filtering is applied at the log aggregation layer, not here — events are
+ * emitted unconditionally so that all environments are observable.
+ */
+function emitAnalyticsEvent(payload: Record<string, unknown>): void {
+	try {
+		process.stderr.write(JSON.stringify(payload) + "\n");
+	} catch {
+		// Swallow errors — analytics emission must never crash the SDK startup path.
+	}
+}
+
 (function validateEncryptionKey(): void {
+	const env = process.env.NODE_ENV ?? "unknown";
 	const key = process.env.ENCRYPTION_KEY;
 
 	// 1. Presence check
 	if (!key) {
+		emitAnalyticsEvent({
+			event: "sdk.startup.failed",
+			env,
+			tier: 1,
+			reason: "key_missing",
+			timestamp: new Date().toISOString(),
+		});
 		throw new Error(
 			"[SDK] ENCRYPTION_KEY environment variable is required but not set. " +
 			"Generate a key with: openssl rand -base64 32",
@@ -32,6 +57,13 @@ import { ENCRYPTION_KEY_BLOCKLIST } from "./blocklist";
 	// 2. Byte-length check (all environments)
 	const byteLength = Buffer.byteLength(key, "utf8");
 	if (byteLength < 32) {
+		emitAnalyticsEvent({
+			event: "sdk.startup.failed",
+			env,
+			tier: 2,
+			reason: "key_too_short",
+			timestamp: new Date().toISOString(),
+		});
 		throw new Error(
 			`[SDK] ENCRYPTION_KEY does not meet minimum length: ` +
 			`${byteLength} bytes provided, 32 bytes required. ` +
@@ -44,6 +76,22 @@ import { ENCRYPTION_KEY_BLOCKLIST } from "./blocklist";
 	// would break the standard dev workflow. The blocklist is a production-only gate.
 	if (process.env.NODE_ENV === "production") {
 		if (ENCRYPTION_KEY_BLOCKLIST.includes(key)) {
+			emitAnalyticsEvent({
+				event: "sdk.startup.failed",
+				env,
+				tier: 3,
+				reason: "key_blocklisted",
+				timestamp: new Date().toISOString(),
+			});
+			// platform.key.weak: distinct ops-layer alert hook for Tier 3 blocklist failures.
+			// Uses the same stderr pattern as sdk.startup.failed — same constraint applies:
+			// zero SDK dependency, fires at the exact point the startup throw occurs.
+			emitAnalyticsEvent({
+				event: "platform.key.weak",
+				env,
+				tier: 3,
+				timestamp: new Date().toISOString(),
+			});
 			throw new Error(
 				`[SDK] ENCRYPTION_KEY matches a known development default and must not be used in production. ` +
 				`The value "${key.slice(0, 8)}..." is on the blocklist. ` +
@@ -51,6 +99,14 @@ import { ENCRYPTION_KEY_BLOCKLIST } from "./blocklist";
 			);
 		}
 	}
+
+	// All checks passed — emit startup success event.
+	emitAnalyticsEvent({
+		event: "sdk.startup.succeeded",
+		env,
+		key_length_bytes: byteLength,
+		timestamp: new Date().toISOString(),
+	});
 })();
 
 // Blocklist
