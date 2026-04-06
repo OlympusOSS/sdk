@@ -1,7 +1,96 @@
 import crypto from "node:crypto";
+import { ENCRYPTION_KEY_BLOCKLIST } from "./blocklist";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12; // NIST SP 800-38D recommended 96-bit IV for AES-GCM
+
+/**
+ * Emits a structured analytics event to stdout.
+ * Zero SDK dependency — safe to call from any point in the crypto path.
+ */
+function emitAnalyticsEvent(payload: Record<string, unknown>): void {
+	try {
+		process.stdout.write(JSON.stringify({ type: "analytics", ...payload }) + "\n");
+	} catch {
+		// Swallow — analytics emission must never crash the crypto path.
+	}
+}
+
+/**
+ * Validates the ENCRYPTION_KEY environment variable.
+ *
+ * Lazy validation: called at the start of encrypt() and decrypt() rather than
+ * at module load time. This allows the SDK to be imported during Next.js build
+ * (where env vars are not available) without throwing. Validation fires when
+ * encryption is actually invoked — which only happens at runtime.
+ *
+ * Checks:
+ *   1. Presence: ENCRYPTION_KEY must be set (all environments)
+ *   2. Byte-length: raw length must be >= 32 bytes (all environments)
+ *   3. Blocklist: key must not match a known dev/example default (production only)
+ */
+function validateEncryptionKey(): void {
+	const env = process.env.NODE_ENV ?? "unknown";
+	const key = process.env.ENCRYPTION_KEY;
+
+	// 1. Presence check
+	if (!key) {
+		emitAnalyticsEvent({
+			event: "sdk.startup.failed",
+			env,
+			tier: 1,
+			reason: "key_missing",
+			timestamp: new Date().toISOString(),
+		});
+		throw new Error(
+			"[SDK] ENCRYPTION_KEY environment variable is required but not set. " +
+			"Generate a key with: openssl rand -base64 32",
+		);
+	}
+
+	// 2. Byte-length check (all environments)
+	const byteLength = Buffer.byteLength(key, "utf8");
+	if (byteLength < 32) {
+		emitAnalyticsEvent({
+			event: "sdk.startup.failed",
+			env,
+			tier: 2,
+			reason: "key_too_short",
+			timestamp: new Date().toISOString(),
+		});
+		throw new Error(
+			`[SDK] ENCRYPTION_KEY does not meet minimum length: ` +
+			`${byteLength} bytes provided, 32 bytes required. ` +
+			"Generate a key with: openssl rand -base64 32",
+		);
+	}
+
+	// 3. Blocklist check (production only)
+	// Dev operators regularly use the known dev key; blocking it in all environments
+	// would break the standard dev workflow. The blocklist is a production-only gate.
+	if (process.env.NODE_ENV === "production") {
+		if (ENCRYPTION_KEY_BLOCKLIST.includes(key)) {
+			emitAnalyticsEvent({
+				event: "sdk.startup.failed",
+				env,
+				tier: 3,
+				reason: "key_blocklisted",
+				timestamp: new Date().toISOString(),
+			});
+			emitAnalyticsEvent({
+				event: "platform.key.weak",
+				env,
+				tier: 3,
+				timestamp: new Date().toISOString(),
+			});
+			throw new Error(
+				`[SDK] ENCRYPTION_KEY matches a known development default and must not be used in production. ` +
+				`The value "${key.slice(0, 8)}..." is on the blocklist. ` +
+				"Generate a production key with: openssl rand -base64 32",
+			);
+		}
+	}
+}
 
 /**
  * Ciphertext version prefix for HKDF-derived key encryptions.
@@ -38,14 +127,9 @@ const HKDF_INFO = "olympus-settings-aes-256-gcm";
  *   Info:   'olympus-settings-aes-256-gcm' — domain separation
  *   Length: 32 bytes — AES-256
  *
- * IMPORTANT: Entropy validation (byte-length + blocklist) is enforced at
- * SDK initialisation time in index.ts, not here. This function assumes a
- * validated key is provided.
- *
- * Scope limitation: if sdk/src/crypto.ts is imported directly without going
- * through the SDK barrel (index.ts), the startup entropy check does not fire.
- * All current SDK consumers import via the barrel. Future consumers importing
- * crypto.ts directly bypass this check — see README for details.
+ * IMPORTANT: Entropy validation (byte-length + blocklist) is enforced lazily
+ * by validateEncryptionKey(), called at the start of encrypt() and decrypt().
+ * This function assumes a validated key is provided by its callers.
  */
 function deriveHkdfKey(rawKey: string): Buffer {
 	const ikm = Buffer.from(rawKey, "utf8");
@@ -100,6 +184,7 @@ function getLegacyEncryptionKey(): Buffer {
 export function encrypt(plaintext: string): string {
 	if (!plaintext) return "";
 
+	validateEncryptionKey();
 	const key = getEncryptionKey();
 	const iv = crypto.randomBytes(IV_LENGTH);
 	const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
@@ -130,6 +215,8 @@ export function encrypt(plaintext: string): string {
  */
 export function decrypt(encryptedValue: string): string {
 	if (!encryptedValue) return "";
+
+	validateEncryptionKey();
 
 	// Detect v2 format: v2:iv:authTag:data
 	if (encryptedValue.startsWith(V2_PREFIX)) {
