@@ -1,3 +1,14 @@
+// Module-load validation: ENCRYPTION_KEY must be present before any SDK function is called.
+// This ensures a deployment with a missing ENCRYPTION_KEY fails at startup, not at first use.
+// Containers (ciam-hera, iam-hera, ciam-athena, iam-athena) import this module on startup —
+// the error surfaces in container logs immediately, before any request is served.
+if (!process.env.ENCRYPTION_KEY) {
+	throw new Error(
+		"[SDK] ENCRYPTION_KEY environment variable is required but not set. " +
+		"Set this variable to a strong random string before starting the service.",
+	);
+}
+
 // Database
 export {
 	getDb,
