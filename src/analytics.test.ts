@@ -38,30 +38,30 @@ function runInlineScript(
 }
 
 // ---------------------------------------------------------------------------
-// Suite 1: try/catch safety — process.stderr.write failure is swallowed
+// Suite 1: try/catch safety — process.stdout.write failure is swallowed
 // ---------------------------------------------------------------------------
 describe("emitAnalyticsEvent() — try/catch safety", () => {
 
-	test("stderr write failure does not propagate — startup succeeds when key is valid", () => {
-		// Script: patch process.stderr.write to throw BEFORE importing the SDK barrel.
+	test("stdout write failure does not propagate — startup succeeds when key is valid", () => {
+		// Script: patch process.stdout.write to throw BEFORE importing the SDK barrel.
 		// With a valid key, the IIFE should complete successfully (emitting to the patched
-		// stderr) and the module should load without any unhandled exception.
+		// stdout) and the module should load without any unhandled exception.
 		const script = `
-const original = process.stderr.write.bind(process.stderr);
-process.stderr.write = () => { throw new Error("simulated stderr failure"); };
+const original = process.stdout.write.bind(process.stdout);
+process.stdout.write = () => { throw new Error("simulated stdout failure"); };
 try {
   // Import index.ts with a valid key — analytics emit will throw internally,
   // but the try/catch in emitAnalyticsEvent() must swallow it.
   await import("./src/index.ts");
   // If we reach here, the startup path completed — no unhandled error from analytics.
-  process.stdout.write("STARTUP_OK\\n");
+  process.stderr.write("STARTUP_OK\\n");
 } catch (e) {
   // Any error here must NOT originate from the analytics path
-  if (e instanceof Error && e.message.includes("simulated stderr failure")) {
-    process.stdout.write("ANALYTICS_LEAKED\\n");
+  if (e instanceof Error && e.message.includes("simulated stdout failure")) {
+    process.stderr.write("ANALYTICS_LEAKED\\n");
   } else {
     // Validation throw (wrong key, etc.) — not what we expect with a valid key
-    process.stdout.write("VALIDATION_THROW: " + e.message + "\\n");
+    process.stderr.write("VALIDATION_THROW: " + e.message + "\\n");
   }
 }
 `;
@@ -71,27 +71,27 @@ try {
 		});
 
 		// The analytics failure must be swallowed — startup completes.
-		expect(result.stdout).toContain("STARTUP_OK");
-		expect(result.stdout).not.toContain("ANALYTICS_LEAKED");
-		expect(result.stdout).not.toContain("VALIDATION_THROW");
+		expect(result.stderr).toContain("STARTUP_OK");
+		expect(result.stderr).not.toContain("ANALYTICS_LEAKED");
+		expect(result.stderr).not.toContain("VALIDATION_THROW");
 	});
 
-	test("stderr write failure does not prevent validation throw — Tier 1 still throws", () => {
+	test("stdout write failure does not prevent validation throw — Tier 1 still throws", () => {
 		// With no key, the IIFE should STILL throw the validation error, even when
 		// emitAnalyticsEvent() fails internally. The analytics try/catch must not
 		// swallow the subsequent validation throw.
 		const script = `
-process.stderr.write = () => { throw new Error("simulated stderr failure"); };
+process.stdout.write = () => { throw new Error("simulated stdout failure"); };
 try {
   await import("./src/index.ts");
-  process.stdout.write("STARTUP_OK_UNEXPECTED\\n");
+  process.stderr.write("STARTUP_OK_UNEXPECTED\\n");
 } catch (e) {
   if (e instanceof Error && e.message.includes("ENCRYPTION_KEY environment variable is required")) {
-    process.stdout.write("VALIDATION_THROW_CORRECT\\n");
-  } else if (e instanceof Error && e.message.includes("simulated stderr failure")) {
-    process.stdout.write("ANALYTICS_LEAKED\\n");
+    process.stderr.write("VALIDATION_THROW_CORRECT\\n");
+  } else if (e instanceof Error && e.message.includes("simulated stdout failure")) {
+    process.stderr.write("ANALYTICS_LEAKED\\n");
   } else {
-    process.stdout.write("UNEXPECTED_ERROR: " + e.message + "\\n");
+    process.stderr.write("UNEXPECTED_ERROR: " + e.message + "\\n");
   }
 }
 `;
@@ -101,9 +101,9 @@ try {
 		});
 
 		// The validation throw must occur (Tier 1 key_missing), NOT the analytics error.
-		expect(result.stdout).toContain("VALIDATION_THROW_CORRECT");
-		expect(result.stdout).not.toContain("ANALYTICS_LEAKED");
-		expect(result.stdout).not.toContain("STARTUP_OK_UNEXPECTED");
+		expect(result.stderr).toContain("VALIDATION_THROW_CORRECT");
+		expect(result.stderr).not.toContain("ANALYTICS_LEAKED");
+		expect(result.stderr).not.toContain("STARTUP_OK_UNEXPECTED");
 	});
 
 });
@@ -113,7 +113,7 @@ try {
 // ---------------------------------------------------------------------------
 describe("sdk.startup.succeeded — event schema", () => {
 
-	test("all required properties present: event, env, key_length_bytes, timestamp", () => {
+	test("all required properties present: type, event, env, key_length_bytes, timestamp", () => {
 		const script = `
 await import("./src/index.ts");
 `;
@@ -122,8 +122,8 @@ await import("./src/index.ts");
 			NODE_ENV: "test",
 		});
 
-		// Find the analytics JSON line on stderr
-		const lines = result.stderr.split("\n").filter((l) => l.trim().startsWith("{"));
+		// Find the analytics JSON line on stdout
+		const lines = result.stdout.split("\n").filter((l) => l.trim().startsWith("{"));
 		const succeededLine = lines.find((l) => {
 			try {
 				return JSON.parse(l).event === "sdk.startup.succeeded";
@@ -135,6 +135,7 @@ await import("./src/index.ts");
 		expect(succeededLine).toBeDefined();
 
 		const payload = JSON.parse(succeededLine!);
+		expect(payload).toHaveProperty("type", "analytics");
 		expect(payload).toHaveProperty("event", "sdk.startup.succeeded");
 		expect(payload).toHaveProperty("env");
 		expect(payload).toHaveProperty("key_length_bytes");
@@ -150,7 +151,7 @@ await import("./src/index.ts");
 			NODE_ENV: "test",
 		});
 
-		const lines = result.stderr.split("\n").filter((l) => l.trim().startsWith("{"));
+		const lines = result.stdout.split("\n").filter((l) => l.trim().startsWith("{"));
 		const succeededLine = lines.find((l) => {
 			try {
 				return JSON.parse(l).event === "sdk.startup.succeeded";
@@ -176,12 +177,12 @@ await import("./src/index.ts");
 			NODE_ENV: "test",
 		});
 
-		// The raw key value must not appear anywhere in the stderr output
-		expect(result.stderr).not.toContain(testKey);
+		// The raw key value must not appear anywhere in the stdout output
+		expect(result.stdout).not.toContain(testKey);
 		// Verify the serialised payload string does not contain any substring of the key > 8 chars
 		// (checking first 8 chars is sufficient — the key prefix test)
 		const keyPrefix = testKey.slice(0, 12);
-		expect(result.stderr).not.toContain(keyPrefix);
+		expect(result.stdout).not.toContain(keyPrefix);
 	});
 
 	test("timestamp is a valid ISO 8601 string", () => {
@@ -192,7 +193,7 @@ await import("./src/index.ts");
 			NODE_ENV: "test",
 		});
 
-		const lines = result.stderr.split("\n").filter((l) => l.trim().startsWith("{"));
+		const lines = result.stdout.split("\n").filter((l) => l.trim().startsWith("{"));
 		const succeededLine = lines.find((l) => {
 			try {
 				return JSON.parse(l).event === "sdk.startup.succeeded";
@@ -216,7 +217,7 @@ await import("./src/index.ts");
 			NODE_ENV: "staging",
 		});
 
-		const lines = result.stderr.split("\n").filter((l) => l.trim().startsWith("{"));
+		const lines = result.stdout.split("\n").filter((l) => l.trim().startsWith("{"));
 		const succeededLine = lines.find((l) => {
 			try {
 				return JSON.parse(l).event === "sdk.startup.succeeded";

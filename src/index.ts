@@ -19,17 +19,20 @@
 import { ENCRYPTION_KEY_BLOCKLIST } from "./blocklist";
 
 /**
- * Emits a structured analytics event to stderr.
+ * Emits a structured analytics event to stdout.
  *
- * Delivery mechanism: process.stderr.write(JSON.stringify(...) + '\n')
+ * Delivery mechanism: process.stdout.write(JSON.stringify(...) + '\n')
  * This has zero SDK dependency and fires even when SDK initialization fails.
  * The analytics pipeline ingests these structured lines from the container log stream.
  * NODE_ENV filtering is applied at the log aggregation layer, not here — events are
  * emitted unconditionally so that all environments are observable.
+ *
+ * The `type: "analytics"` discriminator aligns with the platform-wide log pipeline
+ * convention (Hera: type "analytics", Athena: type "audit") for Loki LogQL filtering.
  */
 function emitAnalyticsEvent(payload: Record<string, unknown>): void {
 	try {
-		process.stderr.write(JSON.stringify(payload) + "\n");
+		process.stdout.write(JSON.stringify({ type: "analytics", ...payload }) + "\n");
 	} catch {
 		// Swallow errors — analytics emission must never crash the SDK startup path.
 	}
