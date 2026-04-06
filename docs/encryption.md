@@ -31,7 +31,7 @@ Each encrypt operation:
 1. Generates a fresh 12-byte random IV
 2. Encrypts with AES-256-GCM (authentication tag included)
 3. Prepends the `v2:` version prefix
-4. Returns: `v2:<base64(IV + ciphertext + authTag)>`
+4. Returns: `v2:<ivBase64>:<authTagBase64>:<ciphertextBase64>`
 
 ### Key Separation
 
@@ -206,8 +206,9 @@ import { decrypt } from "@olympusoss/sdk";
 const plaintext = decrypt("v2:abc...base64...");
 ```
 
+If the ciphertext format is unrecognized (no recognized version prefix), `decrypt()` returns the value as-is — plaintext passthrough for backward compatibility with unencrypted values stored before encryption was introduced. It does not throw.
+
 Throws if:
-- The ciphertext format is unrecognized
 - Authentication tag verification fails (ciphertext was tampered)
 - The key was rotated without running the migration script (mismatch between stored ciphertext and current key)
 
