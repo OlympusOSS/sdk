@@ -212,6 +212,112 @@ Throws if:
 - Authentication tag verification fails (ciphertext was tampered)
 - The key was rotated without running the migration script (mismatch between stored ciphertext and current key)
 
+### `isEncryptedFormat(value: string): boolean`
+
+Returns `true` if the value is in a recognized encrypted format (`v2:` prefix or legacy three-part colon format). Use this to distinguish encrypted values from plaintext values stored before encryption was introduced.
+
+```typescript
+import { isEncryptedFormat } from "@olympusoss/sdk";
+
+isEncryptedFormat("v2:abc:def:ghi"); // true
+isEncryptedFormat("plaintext-value"); // false
+```
+
+Do not re-implement format detection in calling code — use this function.
+
+## Analytics Events
+
+The SDK emits structured analytics events to `process.stdout` on every startup. These events are ingested by the platform log aggregation pipeline and are available for Loki LogQL queries and Athena dashboards.
+
+### Delivery Mechanism
+
+All events are emitted as a single JSON line to `process.stdout`:
+
+```
+{"type":"analytics","event":"sdk.startup.succeeded","env":"production","key_length_bytes":44,"timestamp":"2026-04-06T00:00:00.000Z"}
+```
+
+The `type: "analytics"` discriminator aligns with the platform-wide convention (Hera uses the same field and stream for its analytics events). The delivery path uses `process.stdout.write` directly — it has zero dependency on SDK initialization completing, so events fire even when startup fails and throws.
+
+Emission errors are swallowed — analytics failure cannot crash the startup path. The function is internal to the SDK startup path and is not part of the public API.
+
+### Event Schema
+
+| Event | `type` | Properties | Stream | When |
+|-------|--------|------------|--------|------|
+| `sdk.startup.succeeded` | `analytics` | `env`, `key_length_bytes`, `timestamp` | stdout | All validation checks pass |
+| `sdk.startup.failed` | `analytics` | `env`, `tier` (1/2/3), `reason` (`key_missing` / `key_too_short` / `key_blocklisted`), `timestamp` | stdout | Any validation failure |
+| `platform.key.weak` | `analytics` | `env`, `tier` (3), `timestamp` | stdout | Blocklisted key in production only — emitted alongside `sdk.startup.failed` tier 3 |
+
+### Startup Validation Funnel
+
+```
+Tier 1: ENCRYPTION_KEY present?   FAIL → sdk.startup.failed { tier: 1, reason: "key_missing" }  → throw
+Tier 2: Key >= 32 bytes?           FAIL → sdk.startup.failed { tier: 2, reason: "key_too_short" } → throw
+Tier 3: Not in blocklist? (prod)   FAIL → sdk.startup.failed { tier: 3, reason: "key_blocklisted" }
+                                        + platform.key.weak  { tier: 3 }                          → throw
+PASS  → sdk.startup.succeeded { env, key_length_bytes }
+```
+
+`platform.key.weak` is exclusive to Tier 3. Tier 1 and Tier 2 failures emit only `sdk.startup.failed`.
+
+### Event Properties
+
+| Property | Type | Present on | Description |
+|----------|------|------------|-------------|
+| `type` | string | All events | Always `"analytics"` — discriminator for log pipeline filtering |
+| `event` | string | All events | Event name (e.g., `sdk.startup.succeeded`) |
+| `env` | string | All events | Value of `process.env.NODE_ENV` at startup; `"unknown"` if unset |
+| `key_length_bytes` | number | `sdk.startup.succeeded` | Byte length of the raw `ENCRYPTION_KEY` string — not binary decoded length, not key content |
+| `tier` | number | `sdk.startup.failed`, `platform.key.weak` | Tier that failed: 1 (missing), 2 (short), 3 (blocklisted) |
+| `reason` | string | `sdk.startup.failed` | Machine-readable rejection reason: `key_missing`, `key_too_short`, or `key_blocklisted` |
+| `timestamp` | string | All events | ISO 8601 timestamp of emission |
+
+No key material appears in any event payload. `key_length_bytes` is a byte count. `reason` is a string constant. The Tier 3 error message (thrown, not logged) includes `key.slice(0, 8)` — the analytics events do not.
+
+### Loki LogQL Filtering
+
+Filter SDK startup analytics events:
+
+```logql
+{job="sdk"} | json | type="analytics" | event="sdk.startup.succeeded"
+```
+
+Alert on production blocklist hit:
+
+```logql
+{job="sdk"} | json | type="analytics" | event="platform.key.weak" | env="production"
+```
+
+The `env` field is set at emit time from `process.env.NODE_ENV` — apply `NODE_ENV` filtering at the log aggregation layer to separate production signals from development noise.
+
+### Future-State Events
+
+The following events are defined in the analytics plan but are not yet emitted. They require additional infrastructure before they can be instrumented:
+
+| Event | Blocked on |
+|-------|-----------|
+| `sdk.key.rotated` | Persistent key fingerprint storage (`sdk_key_metadata` table, tracked as [AN-7]) |
+| `sdk.crypto.migrated` | Migration script instrumentation ([AN-2]) |
+| `sdk.decrypt.failed` | Runtime decryption failure tracking in `crypto.ts` ([AN-3]) |
+
+### Testing the Analytics Events
+
+The analytics instrumentation is covered by `sdk/src/analytics.test.ts`. Tests use `Bun.spawnSync` subprocess isolation — each test spawns a fresh Bun process with controlled environment variables to avoid module cache collisions with the IIFE in `index.ts`.
+
+Run the analytics test suite from the SDK project root:
+
+```bash
+bun test sdk/src/analytics.test.ts
+```
+
+The test file must be run from the SDK project root because the inline subprocess scripts import from `./src/index.ts` using a relative path.
+
+Two test suites:
+
+- **Suite 1 — try/catch safety**: verifies that `process.stdout.write` failures are swallowed and do not crash startup; confirms validation throws still fire correctly even when the analytics path fails internally
+- **Suite 2 — `sdk.startup.succeeded` event schema**: verifies all required properties are present (`type`, `event`, `env`, `key_length_bytes`, `timestamp`), that `key_length_bytes` is a number and not key content, that no key material appears in the payload, and that `env` reflects `NODE_ENV`
+
 ## Security Considerations
 
 - **Key rotation requires migration**: changing `ENCRYPTION_KEY` in production without running the migration script will cause decryption failures for all encrypted settings. Plan key rotation with the migration step.
@@ -222,7 +328,10 @@ Throws if:
 ## References
 
 - `sdk/src/crypto.ts` — HKDF key derivation and AES-256-GCM implementation
+- `sdk/src/index.ts` — startup validation IIFE and `emitAnalyticsEvent()` helper
 - `sdk/src/blocklist.ts` — canonical list of known-bad dev keys
 - `sdk/src/migrate-encryption-key.ts` — one-time migration script
+- `sdk/src/analytics.test.ts` — Bun test suite for startup analytics events
+- `docs/state/analytics-sdk5.md` — full analytics plan (event schema, dashboards, instrumentation stories)
 - sdk#5 — Origin ticket
 - athena#99 — Linked cross-repo ticket (`SESSION_SIGNING_KEY` in Athena)

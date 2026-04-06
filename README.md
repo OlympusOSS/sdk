@@ -215,3 +215,11 @@ bun test
 ```
 
 Tests are colocated with source files (`*.test.ts`). All tests mock the database, crypto, and cache modules.
+
+To run only the analytics instrumentation tests:
+
+```bash
+bun test sdk/src/analytics.test.ts
+```
+
+This suite uses `Bun.spawnSync` subprocess isolation and must be run from the SDK project root. It covers the `emitAnalyticsEvent()` try/catch safety guarantee and the `sdk.startup.succeeded` event schema. See [`docs/encryption.md`](./docs/encryption.md#testing-the-analytics-events) for details.
