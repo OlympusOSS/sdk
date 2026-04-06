@@ -167,6 +167,8 @@ const plaintext  = decrypt(ciphertext);
 
 **Important**: `encrypt("")` returns `""` without performing encryption. Never pass empty strings as encrypted values — validate at the call site.
 
+See [`docs/encryption.md`](./docs/encryption.md) for: cryptographic design details, ciphertext versioning table (`v2:` prefix), startup validation NODE_ENV behavior, blocklist maintenance, and the full migration runbook with pre-migration checklist.
+
 ### Upgrading from SDK < 1.0.41 (SHA-256 key derivation)
 
 If you have existing encrypted settings in the `olympus` database, run the migration script before upgrading the SDK in production containers:
