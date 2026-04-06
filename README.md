@@ -9,7 +9,7 @@ The SDK provides persistent, admin-editable key-value configuration stored in th
 - **Settings CRUD** — get, set, batch-set, delete, and list settings per domain (CIAM / IAM)
 - **AES-256-GCM encryption** — transparent encrypt/decrypt for sensitive values (API keys, secrets)
 - **In-memory TTL cache** — reduces database round-trips; 60s default TTL per key
-- **Brute-force protection** — login attempt tracking, lockout management, audit logging
+- **Brute-force protection** — login attempt tracking, lockout management, audit logging (see [`docs/brute-force.md`](./docs/brute-force.md))
 - **Session location tracking** — stores login locations per session for security displays
 
 ## Package Structure
