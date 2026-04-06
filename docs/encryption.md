@@ -308,7 +308,7 @@ The analytics instrumentation is covered by `sdk/src/analytics.test.ts`. Tests u
 Run the analytics test suite from the SDK project root:
 
 ```bash
-bun test sdk/src/analytics.test.ts
+bun test src/analytics.test.ts
 ```
 
 The test file must be run from the SDK project root because the inline subprocess scripts import from `./src/index.ts` using a relative path.
