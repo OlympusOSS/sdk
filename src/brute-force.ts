@@ -35,6 +35,7 @@ export interface LockedAccount {
 	locked_until: Date | null;
 	lock_reason: string | null;
 	auto_threshold_at: number | null;
+	trigger_ip: string | null;
 }
 
 export interface LoginAttempt {
@@ -294,9 +295,9 @@ export async function recordFailedAttempt(
 			const lockoutsTable = getLockoutsTable();
 			await db.unsafe(
 				`INSERT INTO ${lockoutsTable}
-				   (identifier, locked_until, lock_reason, auto_threshold_at)
-				 VALUES ($1, NOW() + INTERVAL '1 second' * $2, 'brute_force', $3)`,
-				[normalized, config.lockoutDurationSeconds, attemptCount],
+				   (identifier, locked_until, lock_reason, auto_threshold_at, trigger_ip)
+				 VALUES ($1, NOW() + INTERVAL '1 second' * $2, 'brute_force', $3, $4)`,
+				[normalized, config.lockoutDurationSeconds, attemptCount, ipAddress ?? null],
 			);
 
 			// Append audit log for lockout creation (fire-and-forget)
@@ -376,7 +377,7 @@ export async function listLockedAccounts(): Promise<LockedAccount[]> {
 	const table = getLockoutsTable();
 
 	const rows = await db.unsafe(
-		`SELECT id, identifier, identity_id, locked_at, locked_until, lock_reason, auto_threshold_at
+		`SELECT id, identifier, identity_id, locked_at, locked_until, lock_reason, auto_threshold_at, trigger_ip
 		 FROM ${table}
 		 WHERE locked_until > NOW()
 		   AND unlocked_at IS NULL

@@ -192,7 +192,8 @@ export async function ensureBruteForceTables(): Promise<void> {
 			unlock_reason        TEXT,
 			unlocked_by_admin_id TEXT,
 			lock_reason          TEXT DEFAULT 'brute_force',
-			auto_threshold_at    SMALLINT
+			auto_threshold_at    SMALLINT,
+			trigger_ip           INET
 		)
 	`);
 
