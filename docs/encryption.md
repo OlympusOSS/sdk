@@ -97,15 +97,60 @@ The canonical list of known-bad dev keys lives in `sdk/src/blocklist.ts`. When a
 
 The entropy check fires only when the SDK is imported via the barrel (`index.ts`). A consumer that imports `sdk/src/crypto.ts` directly bypasses the check. All current Olympus consumers (Athena, Hera, Site) import via the barrel. Future consumers importing crypto utilities directly must implement their own validation or import via the barrel.
 
+## Startup Validation — `validateOnStartup()`
+
+Call `validateOnStartup()` at the entry point of every service that imports `@olympusoss/sdk`. It runs all three validation checks (presence, byte-length, blocklist) and throws immediately with a descriptive error if any check fails. The service does not start with a misconfigured key.
+
+```typescript
+import { validateOnStartup } from "@olympusoss/sdk";
+
+// In your service entry (e.g., server.ts, app.ts) — before any other SDK calls:
+await validateOnStartup();
+```
+
+### Error shapes
+
+Every validation error follows the `{ code, message, suggestion }` format. The `suggestion` field contains the exact command to fix the problem — no documentation lookup required.
+
+| Code | Cause | Suggestion |
+|------|-------|-----------|
+| `ENCRYPTION_KEY_ABSENT` | `ENCRYPTION_KEY` env var is not set | `Generate a key: openssl rand -base64 32` |
+| `ENCRYPTION_KEY_WEAK` | Key is shorter than 32 bytes | `Generate a key: openssl rand -base64 32` |
+| `ENCRYPTION_KEY_BLOCKLISTED` | Key matches a known development placeholder | `Generate a unique key: openssl rand -base64 32` |
+
+Example thrown error:
+
+```
+EncryptionKeyError: ENCRYPTION_KEY is not set.
+  code: ENCRYPTION_KEY_ABSENT
+  suggestion: Generate a key: openssl rand -base64 32 (Unix) or node -e "require('crypto').randomBytes(32).toString('base64')" (Windows)
+```
+
+The SDK throws on any validation failure. The service must not catch and suppress this error — allow it to propagate and crash the startup process.
+
 ## Generating a Key
 
-Always use the following command to generate `ENCRYPTION_KEY`:
+**Unix / macOS / Linux:**
 
 ```bash
 openssl rand -base64 32
 ```
 
-This produces 256 bits of cryptographically random key material encoded as base64 (44 characters, 32 bytes when decoded).
+**Windows (PowerShell):**
+
+```powershell
+node -e "require('crypto').randomBytes(32).toString('base64')"
+```
+
+Both commands produce 256 bits of cryptographically random key material encoded as base64 (44 characters, 32 bytes when decoded).
+
+**Shell quoting**: base64 output may contain `+`, `/`, and `=` characters. Always quote the value when setting it as an environment variable to prevent shell interpolation:
+
+```bash
+export ENCRYPTION_KEY="GK7s39Oa7613mZvjSvUZuBdZvo3wfTOig2ms/KRLtcg="
+```
+
+Without quotes, a `+` or `/` in the key value will be interpreted by the shell and produce a different value than intended.
 
 **Critical rules:**
 - Never reuse a key from dev seed files, example configs, or repository history in production
