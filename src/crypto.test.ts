@@ -1,6 +1,6 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll, spyOn } from "bun:test";
 import crypto from "node:crypto";
-import { encrypt, decrypt, isEncryptedFormat, deriveLegacyKeyForMigration } from "./crypto";
+import { encrypt, decrypt, isEncryptedFormat, deriveLegacyKeyForMigration, validateOnStartup } from "./crypto";
 
 // Use a 32-byte test key (passes byte-length check; not on production blocklist)
 const TEST_KEY = "test-encryption-key-exactly-32b!";
@@ -185,5 +185,152 @@ describe("startup entropy validation (index.ts gate)", () => {
 		expect(wouldBlockInProduction).toBe(true);
 
 		process.env.NODE_ENV = originalNodeEnv;
+	});
+});
+
+describe("validateOnStartup()", () => {
+	const originalKey = process.env.ENCRYPTION_KEY;
+	const originalNodeEnv = process.env.NODE_ENV;
+
+	afterAll(() => {
+		process.env.ENCRYPTION_KEY = originalKey;
+		process.env.NODE_ENV = originalNodeEnv;
+	});
+
+	test("passes silently for a valid 32-byte key", () => {
+		process.env.ENCRYPTION_KEY = "test-encryption-key-exactly-32b!";
+		process.env.NODE_ENV = "test";
+		expect(() => validateOnStartup()).not.toThrow();
+	});
+
+	test("throws Tier 1 (key_missing) when ENCRYPTION_KEY is absent", () => {
+		process.env.ENCRYPTION_KEY = "";
+		process.env.NODE_ENV = "test";
+		expect(() => validateOnStartup()).toThrow("[SDK] ENCRYPTION_KEY is required.");
+	});
+
+	test("Tier 1 error message contains openssl rand instruction", () => {
+		process.env.ENCRYPTION_KEY = "";
+		process.env.NODE_ENV = "test";
+		let message = "";
+		try {
+			validateOnStartup();
+		} catch (e) {
+			message = e instanceof Error ? e.message : String(e);
+		}
+		expect(message).toContain("openssl rand -base64 32");
+	});
+
+	test("throws Tier 2 (key_too_short) when ENCRYPTION_KEY is < 32 bytes", () => {
+		process.env.ENCRYPTION_KEY = "short";
+		process.env.NODE_ENV = "test";
+		expect(() => validateOnStartup()).toThrow("[SDK] ENCRYPTION_KEY is too short");
+	});
+
+	test("Tier 2 error includes byte counts", () => {
+		process.env.ENCRYPTION_KEY = "short";
+		process.env.NODE_ENV = "test";
+		let message = "";
+		try {
+			validateOnStartup();
+		} catch (e) {
+			message = e instanceof Error ? e.message : String(e);
+		}
+		expect(message).toContain("5 bytes provided");
+		expect(message).toContain("32 bytes required");
+	});
+
+	test("Tier 2 error message does not contain key material", () => {
+		const shortKey = "onlythirty1bytes!!!!!!!!!!!!!!!";
+		process.env.ENCRYPTION_KEY = shortKey;
+		process.env.NODE_ENV = "test";
+		let message = "";
+		try {
+			validateOnStartup();
+		} catch (e) {
+			message = e instanceof Error ? e.message : String(e);
+		}
+		expect(message).not.toContain(shortKey);
+		expect(message).not.toContain(shortKey.slice(0, 8));
+	});
+
+	test("throws Tier 3 (key_blocklisted) for dev default key in production", () => {
+		const devKey = "dev-encryption-key-minimum-32-chars!!";
+		process.env.ENCRYPTION_KEY = devKey;
+		process.env.NODE_ENV = "production";
+		expect(() => validateOnStartup()).toThrow(
+			"[SDK] ENCRYPTION_KEY matches a known dev default",
+		);
+		// Restore
+		process.env.NODE_ENV = originalNodeEnv;
+	});
+
+	test("Tier 3 error message does not contain key material (no key.slice)", () => {
+		const devKey = "dev-encryption-key-minimum-32-chars!!";
+		process.env.ENCRYPTION_KEY = devKey;
+		process.env.NODE_ENV = "production";
+		let message = "";
+		try {
+			validateOnStartup();
+		} catch (e) {
+			message = e instanceof Error ? e.message : String(e);
+		}
+		// Key content must not appear in the error message
+		expect(message).not.toContain(devKey);
+		expect(message).not.toContain(devKey.slice(0, 8));
+		// Restore
+		process.env.NODE_ENV = originalNodeEnv;
+	});
+
+	test("dev default key is NOT rejected in non-production environments", () => {
+		const devKey = "dev-encryption-key-minimum-32-chars!!";
+		process.env.ENCRYPTION_KEY = devKey;
+		process.env.NODE_ENV = "development";
+		expect(() => validateOnStartup()).not.toThrow();
+	});
+
+	test("AC-3: HKDF is the key derivation code path (not bare SHA-256)", () => {
+		// Verify that crypto.hkdfSync is called during encrypt(), which uses deriveHkdfKey()
+		// This confirms the HKDF derivation path is active (not createHash('sha256'))
+		process.env.ENCRYPTION_KEY = "test-encryption-key-exactly-32b!";
+		process.env.NODE_ENV = "test";
+
+		const hkdfSyncSpy = spyOn(crypto, "hkdfSync");
+		encrypt("test-value-for-hkdf-assertion");
+
+		expect(hkdfSyncSpy).toHaveBeenCalled();
+		expect(hkdfSyncSpy).toHaveBeenCalledWith(
+			"sha256",
+			expect.any(Buffer),
+			expect.any(Buffer),
+			expect.any(Buffer),
+			32,
+		);
+		hkdfSyncSpy.mockRestore();
+	});
+
+	test("validateOnStartup emits sdk.startup.succeeded on success (no key material in output)", () => {
+		const testKey = "test-encryption-key-exactly-32b!";
+		process.env.ENCRYPTION_KEY = testKey;
+		process.env.NODE_ENV = "test";
+
+		const emitted: string[] = [];
+		const originalWrite = process.stdout.write.bind(process.stdout);
+		process.stdout.write = (chunk: unknown): boolean => {
+			emitted.push(String(chunk));
+			return true;
+		};
+
+		try {
+			validateOnStartup();
+		} finally {
+			process.stdout.write = originalWrite;
+		}
+
+		const combined = emitted.join("");
+		expect(combined).toContain("sdk.startup.succeeded");
+		// key material must not appear in the analytics output
+		expect(combined).not.toContain(testKey);
+		expect(combined).not.toContain(testKey.slice(0, 8));
 	});
 });

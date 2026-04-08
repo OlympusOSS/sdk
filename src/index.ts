@@ -39,6 +39,7 @@ export {
 	isEncryptedFormat,
 	deriveLegacyKeyForMigration,
 	deriveHkdfKeyForMigration,
+	validateOnStartup,
 } from "./crypto";
 
 // Cache

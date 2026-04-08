@@ -85,7 +85,6 @@ function validateEncryptionKey(): void {
 			});
 			throw new Error(
 				`[SDK] ENCRYPTION_KEY matches a known development default and must not be used in production. ` +
-				`The value "${key.slice(0, 8)}..." is on the blocklist. ` +
 				"Generate a production key with: openssl rand -base64 32",
 			);
 		}
@@ -293,4 +292,93 @@ export function deriveLegacyKeyForMigration(rawKey: string): Buffer {
  */
 export function deriveHkdfKeyForMigration(rawKey: string): Buffer {
 	return deriveHkdfKey(rawKey);
+}
+
+/**
+ * Validates the ENCRYPTION_KEY environment variable at startup.
+ *
+ * This function is designed to be called from the consuming app's entry point
+ * (e.g., Next.js instrumentation.ts) BEFORE any requests are accepted. It throws
+ * on failure so that:
+ *   1. It can be tested in unit tests without killing the test runner.
+ *   2. The consuming entry point can catch the error, log it, and call process.exit(1).
+ *
+ * Three-layer validation (in order):
+ *   Layer 1 — Presence: ENCRYPTION_KEY must be set (all environments)
+ *   Layer 2 — Byte-length: raw UTF-8 length must be >= 32 bytes (all environments)
+ *   Layer 3 — Blocklist: key must not match a known dev/example default (production only)
+ *
+ * On success: emits sdk.startup.succeeded analytics event.
+ * On failure: emits a structured analytics event, then throws with a descriptive message.
+ *
+ * IMPORTANT: Error messages and analytics payloads must NEVER include key material.
+ * Do NOT add key.slice() or any key substring to any string in this function.
+ *
+ * @throws {Error} If ENCRYPTION_KEY fails any validation layer.
+ */
+export function validateOnStartup(): void {
+	const env = process.env.NODE_ENV ?? "unknown";
+	const key = process.env.ENCRYPTION_KEY;
+
+	// Layer 1: Presence check (all environments)
+	if (!key) {
+		emitAnalyticsEvent({
+			event: "sdk.startup.failed",
+			reason: "key_missing",
+			tier: 1,
+			env,
+			timestamp: new Date().toISOString(),
+		});
+		throw new Error(
+			"[SDK] ENCRYPTION_KEY is required. Generate a key: openssl rand -base64 32",
+		);
+	}
+
+	// Layer 2: Byte-length check (all environments)
+	const byteLength = Buffer.byteLength(key, "utf8");
+	if (byteLength < 32) {
+		emitAnalyticsEvent({
+			event: "sdk.startup.failed",
+			reason: "key_too_short",
+			tier: 2,
+			env,
+			byteLength,
+			timestamp: new Date().toISOString(),
+		});
+		throw new Error(
+			`[SDK] ENCRYPTION_KEY is too short: ${byteLength} bytes provided, 32 bytes required. ` +
+			"Generate a key: openssl rand -base64 32",
+		);
+	}
+
+	// Layer 3: Blocklist check (production only)
+	if (process.env.NODE_ENV === "production") {
+		if (ENCRYPTION_KEY_BLOCKLIST.includes(key)) {
+			emitAnalyticsEvent({
+				event: "sdk.startup.failed",
+				reason: "key_blocklisted",
+				tier: 3,
+				env,
+				timestamp: new Date().toISOString(),
+			});
+			emitAnalyticsEvent({
+				event: "platform.key.weak",
+				env,
+				tier: 3,
+				timestamp: new Date().toISOString(),
+			});
+			throw new Error(
+				"[SDK] ENCRYPTION_KEY matches a known dev default and must not be used in production. " +
+				"Generate a key: openssl rand -base64 32",
+			);
+		}
+	}
+
+	// All checks passed — emit success event
+	emitAnalyticsEvent({
+		event: "sdk.startup.succeeded",
+		env,
+		key_length_bytes: byteLength,
+		timestamp: new Date().toISOString(),
+	});
 }

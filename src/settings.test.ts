@@ -39,6 +39,9 @@ mock.module("./crypto", () => ({
 	encrypt: (value: string) => `encrypted:${value}:mock`,
 	decrypt: (value: string) => value,
 	isEncryptedFormat: () => false,
+	deriveLegacyKeyForMigration: () => Buffer.alloc(32),
+	deriveHkdfKeyForMigration: () => Buffer.alloc(32),
+	validateOnStartup: () => {},
 }));
 
 // Mock the cache to give us control over returned values
