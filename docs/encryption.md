@@ -1,7 +1,32 @@
 # SDK Encryption — Internals and Operations
 
 **Ticket**: sdk#5
-**Last updated**: 2026-04-06
+**Last updated**: 2026-04-08
+
+## Upgrading to SDK >= 1.0.41
+
+If you are upgrading from SDK < 1.0.41, complete these steps in order:
+
+1. **Generate a production-grade key** (if not already done):
+   ```bash
+   openssl rand -base64 32
+   ```
+   Ensure `ENCRYPTION_KEY` is at least 32 bytes. Store it in your GitHub Secret, not in source control.
+
+2. **Add `validateOnStartup()` to your service entry point**:
+   ```typescript
+   import { validateOnStartup } from "@olympusoss/sdk";
+   validateOnStartup(); // synchronous — throws on failure
+   ```
+   In Next.js apps (Athena, Hera), this goes in `src/instrumentation.ts` under a `NEXT_RUNTIME === 'nodejs'` guard.
+
+3. **Run the migration script** (if you have existing encrypted settings):
+   ```bash
+   DATABASE_URL=postgres://... ENCRYPTION_KEY=<key> bun run src/migrate-encryption-key.ts
+   ```
+   Skip this step if your database has no encrypted rows (fresh install). See [Migration Runbook](#migration-runbook-sdk--1041-upgrade) for details.
+
+4. **Co-deploy with athena#99** (if applicable): Set `SESSION_SIGNING_KEY` in all Athena containers. `ENCRYPTION_KEY` and `SESSION_SIGNING_KEY` must be different values.
 
 ## Overview
 
@@ -105,8 +130,10 @@ Call `validateOnStartup()` at the entry point of every service that imports `@ol
 import { validateOnStartup } from "@olympusoss/sdk";
 
 // In your service entry (e.g., server.ts, app.ts) — before any other SDK calls:
-await validateOnStartup();
+validateOnStartup();
 ```
+
+`validateOnStartup()` is synchronous. It returns `void` and throws on failure. No `await` needed.
 
 ### Error shapes
 
@@ -318,7 +345,7 @@ PASS  → sdk.startup.succeeded { env, key_length_bytes }
 | `reason` | string | `sdk.startup.failed` | Machine-readable rejection reason: `key_missing`, `key_too_short`, or `key_blocklisted` |
 | `timestamp` | string | All events | ISO 8601 timestamp of emission |
 
-No key material appears in any event payload. `key_length_bytes` is a byte count. `reason` is a string constant. The Tier 3 error message (thrown, not logged) includes `key.slice(0, 8)` — the analytics events do not.
+No key material appears in any event payload or error messages. `key_length_bytes` is a byte count. `reason` is a string constant. Error messages never include key substrings or any key material.
 
 ### Loki LogQL Filtering
 
