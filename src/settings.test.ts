@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeEach } from "bun:test";
+import { describe, expect, test, mock, beforeEach, afterAll } from "bun:test";
 
 // Track upserted rows and invalidated cache keys across tests
 let upsertedRows: Array<{ key: string; value: string; encrypted: boolean; category: string }> = [];
@@ -69,6 +69,12 @@ beforeEach(() => {
 	upsertedRows = [];
 	invalidatedKeys = [];
 	txShouldFail = false;
+});
+
+afterAll(() => {
+	// Restore all module mocks so they don't contaminate subsequent test files
+	// (specifically crypto.test.ts which imports the real ./crypto module)
+	mock.restore();
 });
 
 describe("getSettingOrDefault", () => {
