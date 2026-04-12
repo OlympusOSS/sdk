@@ -1,3 +1,15 @@
+// Startup diagnostics — non-throwing ERROR log if ENCRYPTION_KEY is absent.
+// This runs at import time (module evaluation) but does NOT throw, so Next.js
+// build-time page-data collection can import the barrel without crashing.
+// The actual throw is deferred to the first encrypt()/decrypt() call.
+if (!process.env.ENCRYPTION_KEY) {
+	console.error(
+		"[SDK] ERROR: ENCRYPTION_KEY environment variable is not set. " +
+		"Encryption operations will fail at runtime. " +
+		"Generate a key with: openssl rand -base64 32",
+	);
+}
+
 // Blocklist
 export { ENCRYPTION_KEY_BLOCKLIST } from "./blocklist";
 

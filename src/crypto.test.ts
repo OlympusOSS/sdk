@@ -334,3 +334,94 @@ describe("validateOnStartup()", () => {
 		expect(combined).not.toContain(testKey.slice(0, 8));
 	});
 });
+
+describe("Security C3: exact error messages for lazy validateEncryptionKey()", () => {
+	// These tests verify the EXACT error messages thrown by the internal
+	// validateEncryptionKey() when called via encrypt()/decrypt() at runtime.
+	// This satisfies Security condition C3: "Exact SDK error message verified
+	// by automated unit test."
+
+	const originalKey = process.env.ENCRYPTION_KEY;
+	const originalNodeEnv = process.env.NODE_ENV;
+
+	afterAll(() => {
+		process.env.ENCRYPTION_KEY = originalKey;
+		process.env.NODE_ENV = originalNodeEnv;
+	});
+
+	test("encrypt() throws exact Tier 1 message when ENCRYPTION_KEY is absent", () => {
+		delete process.env.ENCRYPTION_KEY;
+		process.env.NODE_ENV = "test";
+		let message = "";
+		try {
+			encrypt("test");
+		} catch (e) {
+			message = e instanceof Error ? e.message : String(e);
+		}
+		expect(message).toBe(
+			"[SDK] ENCRYPTION_KEY environment variable is required but not set. " +
+			"Generate a key with: openssl rand -base64 32",
+		);
+	});
+
+	test("decrypt() throws exact Tier 1 message when ENCRYPTION_KEY is absent", () => {
+		delete process.env.ENCRYPTION_KEY;
+		process.env.NODE_ENV = "test";
+		let message = "";
+		try {
+			decrypt("v2:abc:def:ghi");
+		} catch (e) {
+			message = e instanceof Error ? e.message : String(e);
+		}
+		expect(message).toBe(
+			"[SDK] ENCRYPTION_KEY environment variable is required but not set. " +
+			"Generate a key with: openssl rand -base64 32",
+		);
+	});
+
+	test("encrypt() throws exact Tier 2 message when ENCRYPTION_KEY is too short", () => {
+		process.env.ENCRYPTION_KEY = "short-key";
+		process.env.NODE_ENV = "test";
+		let message = "";
+		try {
+			encrypt("test");
+		} catch (e) {
+			message = e instanceof Error ? e.message : String(e);
+		}
+		expect(message).toBe(
+			"[SDK] ENCRYPTION_KEY does not meet minimum length: " +
+			"9 bytes provided, 32 bytes required. " +
+			"Generate a key with: openssl rand -base64 32",
+		);
+	});
+
+	test("encrypt() throws exact Tier 3 message for blocklisted key in production", () => {
+		process.env.ENCRYPTION_KEY = "dev-encryption-key-minimum-32-chars!!";
+		process.env.NODE_ENV = "production";
+		let message = "";
+		try {
+			encrypt("test");
+		} catch (e) {
+			message = e instanceof Error ? e.message : String(e);
+		}
+		expect(message).toBe(
+			"[SDK] ENCRYPTION_KEY matches a known development default and must not be used in production. " +
+			"Generate a production key with: openssl rand -base64 32",
+		);
+		process.env.NODE_ENV = originalNodeEnv;
+	});
+
+	test("error messages never contain key material", () => {
+		const shortKey = "my-secret-short-key";
+		process.env.ENCRYPTION_KEY = shortKey;
+		process.env.NODE_ENV = "test";
+		let message = "";
+		try {
+			encrypt("test");
+		} catch (e) {
+			message = e instanceof Error ? e.message : String(e);
+		}
+		expect(message).not.toContain(shortKey);
+		expect(message).not.toContain(shortKey.slice(0, 8));
+	});
+});
