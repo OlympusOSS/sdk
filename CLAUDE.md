@@ -4,8 +4,8 @@ Shared settings, encryption, and database client (`@olympusoss/sdk`) for the Oly
 
 ## Versioning
 
-**Always use `octl bump` to bump versions** — never manually edit version numbers in `package.json`.
-`octl bump` handles the full flow: discovers the highest version across all repos, bumps canvas first, waits for npm publish, then updates all downstream repos together.
+- **Humans**: Use `octl bump` to bump versions across all repos
+- **Agents**: Never use `octl`. Engineers bump `package.json` directly as part of their implementation. The Release Manager creates tags. See root `CLAUDE.md` for the full agent versioning protocol.
 
 ## Agent System
 
