@@ -1,11 +1,14 @@
 /**
- * Analytics instrumentation tests for sdk/src/index.ts
+ * Analytics instrumentation tests for validateOnStartup() and emitAnalyticsEvent()
  *
  * Tests the `emitAnalyticsEvent()` helper and startup event schema.
- * Because the IIFE in index.ts runs at module-load time (once per module evaluation),
- * each scenario that needs distinct env-var state is run in a subprocess via
- * Bun.spawnSync. This is the standard pattern for testing module-level side effects
- * in Bun — it avoids require-cache collisions and IIFE re-execution issues.
+ * Because each scenario needs distinct env-var state, each subprocess test uses
+ * Bun.spawnSync to run a small inline script. This avoids require-cache collisions
+ * and ensures each test starts with a fresh module evaluation.
+ *
+ * Architecture note: validateOnStartup() is NOT called at module-load time in index.ts.
+ * It is called by the consuming app's entry point (e.g., instrumentation.ts in Athena/Hera).
+ * These tests call it explicitly to test the analytics event schema.
  *
  * Two test suites:
  *   1. try/catch safety — stderr write failures are swallowed; startup continues normally
@@ -42,17 +45,15 @@ function runInlineScript(
 // ---------------------------------------------------------------------------
 describe("emitAnalyticsEvent() — try/catch safety", () => {
 
-	test("stdout write failure does not propagate — startup succeeds when key is valid", () => {
-		// Script: patch process.stdout.write to throw BEFORE importing the SDK barrel.
-		// With a valid key, the IIFE should complete successfully (emitting to the patched
-		// stdout) and the module should load without any unhandled exception.
+	test("stdout write failure does not propagate — validateOnStartup() succeeds when key is valid", () => {
+		// Script: patch process.stdout.write to throw BEFORE calling validateOnStartup().
+		// With a valid key, validateOnStartup() should complete (emitting to the patched
+		// stdout) without propagating the analytics failure.
 		const script = `
-const original = process.stdout.write.bind(process.stdout);
 process.stdout.write = () => { throw new Error("simulated stdout failure"); };
 try {
-  // Import index.ts with a valid key — analytics emit will throw internally,
-  // but the try/catch in emitAnalyticsEvent() must swallow it.
-  await import("./src/index.ts");
+  const { validateOnStartup } = await import("./src/crypto.ts");
+  validateOnStartup();
   // If we reach here, the startup path completed — no unhandled error from analytics.
   process.stderr.write("STARTUP_OK\\n");
 } catch (e) {
@@ -77,21 +78,22 @@ try {
 	});
 
 	test("stdout write failure does not prevent validation throw — Tier 1 still throws", () => {
-		// With no key, the IIFE should STILL throw the validation error, even when
-		// emitAnalyticsEvent() fails internally. The analytics try/catch must not
-		// swallow the subsequent validation throw.
+		// With no key, validateOnStartup() should STILL throw the validation error,
+		// even when emitAnalyticsEvent() fails internally. The analytics try/catch must
+		// not swallow the subsequent validation throw.
 		const script = `
 process.stdout.write = () => { throw new Error("simulated stdout failure"); };
 try {
-  await import("./src/index.ts");
+  const { validateOnStartup } = await import("./src/crypto.ts");
+  validateOnStartup();
   process.stderr.write("STARTUP_OK_UNEXPECTED\\n");
 } catch (e) {
-  if (e instanceof Error && e.message.includes("ENCRYPTION_KEY environment variable is required")) {
+  if (e instanceof Error && e.message.includes("ENCRYPTION_KEY is required")) {
     process.stderr.write("VALIDATION_THROW_CORRECT\\n");
   } else if (e instanceof Error && e.message.includes("simulated stdout failure")) {
     process.stderr.write("ANALYTICS_LEAKED\\n");
   } else {
-    process.stderr.write("UNEXPECTED_ERROR: " + e.message + "\\n");
+    process.stderr.write("UNEXPECTED_ERROR: " + (e instanceof Error ? e.message : String(e)) + "\\n");
   }
 }
 `;
@@ -115,7 +117,8 @@ describe("sdk.startup.succeeded — event schema", () => {
 
 	test("all required properties present: type, event, env, key_length_bytes, timestamp", () => {
 		const script = `
-await import("./src/index.ts");
+const { validateOnStartup } = await import("./src/crypto.ts");
+validateOnStartup();
 `;
 		const result = runInlineScript(script, {
 			ENCRYPTION_KEY: "test-encryption-key-exactly-32b!",
@@ -144,7 +147,10 @@ await import("./src/index.ts");
 
 	test("key_length_bytes is a number — not key content", () => {
 		const testKey = "test-encryption-key-exactly-32b!";
-		const script = `await import("./src/index.ts");`;
+		const script = `
+const { validateOnStartup } = await import("./src/crypto.ts");
+validateOnStartup();
+`;
 
 		const result = runInlineScript(script, {
 			ENCRYPTION_KEY: testKey,
@@ -170,7 +176,10 @@ await import("./src/index.ts");
 
 	test("no key material in sdk.startup.succeeded payload", () => {
 		const testKey = "test-encryption-key-exactly-32b!";
-		const script = `await import("./src/index.ts");`;
+		const script = `
+const { validateOnStartup } = await import("./src/crypto.ts");
+validateOnStartup();
+`;
 
 		const result = runInlineScript(script, {
 			ENCRYPTION_KEY: testKey,
@@ -186,7 +195,10 @@ await import("./src/index.ts");
 	});
 
 	test("timestamp is a valid ISO 8601 string", () => {
-		const script = `await import("./src/index.ts");`;
+		const script = `
+const { validateOnStartup } = await import("./src/crypto.ts");
+validateOnStartup();
+`;
 
 		const result = runInlineScript(script, {
 			ENCRYPTION_KEY: "test-encryption-key-exactly-32b!",
@@ -210,7 +222,10 @@ await import("./src/index.ts");
 	});
 
 	test("env field matches NODE_ENV", () => {
-		const script = `await import("./src/index.ts");`;
+		const script = `
+const { validateOnStartup } = await import("./src/crypto.ts");
+validateOnStartup();
+`;
 
 		const result = runInlineScript(script, {
 			ENCRYPTION_KEY: "test-encryption-key-exactly-32b!",

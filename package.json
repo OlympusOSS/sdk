@@ -19,7 +19,7 @@
 		"tsconfig.json"
 	],
 	"scripts": {
-		"test": "bun test"
+		"test": "bun test --no-parallel"
 	},
 	"license": "MIT",
 	"dependencies": {

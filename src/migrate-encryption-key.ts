@@ -19,7 +19,13 @@
  * Idempotency: rows already carrying v2: prefix are skipped. Safe to re-run.
  *
  * Usage:
- *   DATABASE_URL=... ENCRYPTION_KEY=... bun run src/migrate-encryption-key.ts
+ *   DATABASE_URL=... ENCRYPTION_KEY=... bun run src/migrate-encryption-key.ts [--dry-run]
+ *
+ * Flags:
+ *   --dry-run   Scan and validate all rows without writing. Prints counts and per-row
+ *               status. Use to verify the migration is safe before running in production.
+ *               Required review step: include dry-run output in the PR description and
+ *               have it reviewed by the CIAM Architect before running production migration.
  *
  * Run BEFORE upgrading the SDK in production containers. If run after upgrade, the
  * runtime decrypt() will fail on legacy rows until this script completes.
@@ -84,6 +90,7 @@ function hkdfEncrypt(plaintext: string, hkdfKey: Buffer): string {
 async function migrate(): Promise<void> {
 	const databaseUrl = process.env.DATABASE_URL;
 	const encryptionKey = process.env.ENCRYPTION_KEY;
+	const isDryRun = process.argv.includes("--dry-run");
 
 	if (!databaseUrl) {
 		console.error("[migrate] DATABASE_URL is required");
@@ -94,9 +101,16 @@ async function migrate(): Promise<void> {
 		process.exit(1);
 	}
 
+	if (isDryRun) {
+		console.log("[migrate] DRY RUN mode — no rows will be written");
+	}
+
 	// Derive both keys upfront
 	const legacyKey = deriveLegacyKeyForMigration(encryptionKey);
 	const hkdfKey = deriveHkdfKeyForMigration(encryptionKey);
+
+	// Suppress TS unused-variable warning for hkdfKey in dry-run paths
+	void hkdfKey;
 
 	console.log("[migrate] Keys derived. Starting migration...");
 
@@ -128,6 +142,12 @@ async function migrate(): Promise<void> {
 			);
 
 			console.log(`[migrate]   Found ${rows.length} encrypted rows`);
+			if (isDryRun) {
+				const legacyCount = rows.filter((r) => !r.value.startsWith(V2_PREFIX)).length;
+				const v2Count = rows.filter((r) => r.value.startsWith(V2_PREFIX)).length;
+				console.log(`[migrate]   Legacy (needs migration): ${legacyCount}`);
+				console.log(`[migrate]   Already v2 (skip):        ${v2Count}`);
+			}
 
 			for (const row of rows) {
 				totalProcessed++;
@@ -135,33 +155,48 @@ async function migrate(): Promise<void> {
 				// Skip already-migrated rows (v2: prefix present)
 				if (row.value.startsWith(V2_PREFIX)) {
 					totalSkipped++;
-					console.log(`[migrate]   SKIP key=${row.key} (already v2)`);
+					if (isDryRun) {
+						console.log(`[migrate]   DRY SKIP key=${row.key} (already v2, value_length=${row.value.length})`);
+					} else {
+						console.log(`[migrate]   SKIP key=${row.key} (already v2)`);
+					}
 					continue;
 				}
 
-				// Decrypt legacy ciphertext using SHA-256-derived key
+				// Validate: attempt legacy decrypt to confirm the row is decryptable
 				let plaintext: string;
 				try {
 					plaintext = legacyDecrypt(row.value, legacyKey);
 				} catch (err) {
 					totalFailed++;
+					// Log only the error message — never log the ciphertext or decrypted value
 					console.error(`[migrate]   FAIL key=${row.key} — legacy decrypt failed:`, err instanceof Error ? err.message : String(err));
 					continue;
 				}
 
-				// Re-encrypt with HKDF-derived key
-				const newCiphertext = hkdfEncrypt(plaintext, hkdfKey);
+				if (isDryRun) {
+					// Dry-run: report decryptable row by key name and plaintext length only
+					// (never log plaintext value itself)
+					totalMigrated++;
+					console.log(`[migrate]   DRY OK key=${row.key} (decryptable, plaintext_length=${plaintext.length})`);
+					continue;
+				}
 
-				// Write back
+				// Re-encrypt with HKDF-derived key inside a per-row transaction
+				// If the write fails, the row is left in its original state (idempotent).
 				try {
-					await sql.unsafe(
-						`UPDATE ${table} SET value = $1, updated_at = NOW() WHERE key = $2`,
-						[newCiphertext, row.key],
-					);
+					const newCiphertext = hkdfEncrypt(plaintext, hkdfKey);
+					await sql.begin(async (tx) => {
+						await tx.unsafe(
+							`UPDATE ${table} SET value = $1, updated_at = NOW() WHERE key = $2`,
+							[newCiphertext, row.key],
+						);
+					});
 					totalMigrated++;
 					console.log(`[migrate]   OK key=${row.key}`);
 				} catch (err) {
 					totalFailed++;
+					// Log only key name and error message — never log the plaintext or ciphertext
 					console.error(`[migrate]   FAIL key=${row.key} — write failed:`, err instanceof Error ? err.message : String(err));
 				}
 			}
@@ -170,17 +205,29 @@ async function migrate(): Promise<void> {
 		await sql.end();
 	}
 
-	console.log("\n[migrate] Summary:");
-	console.log(`  Processed : ${totalProcessed}`);
-	console.log(`  Migrated  : ${totalMigrated}`);
-	console.log(`  Skipped   : ${totalSkipped} (already v2)`);
-	console.log(`  Failed    : ${totalFailed}`);
-
-	if (totalFailed > 0) {
-		console.error("[migrate] Migration completed with failures. Re-run to retry failed rows.");
-		process.exit(1);
+	if (isDryRun) {
+		console.log("\n[migrate] DRY RUN Summary:");
+		console.log(`  Processed       : ${totalProcessed}`);
+		console.log(`  Decryptable     : ${totalMigrated} (would migrate)`);
+		console.log(`  Already v2      : ${totalSkipped} (would skip)`);
+		console.log(`  Failed decrypt  : ${totalFailed} (would fail)`);
+		console.log("\n[migrate] DRY RUN complete. No rows were written.");
+		if (totalFailed > 0) {
+			process.exit(1);
+		}
 	} else {
-		console.log("[migrate] Migration complete. All encrypted rows are now using HKDF-derived key.");
+		console.log("\n[migrate] Summary:");
+		console.log(`  Processed : ${totalProcessed}`);
+		console.log(`  Migrated  : ${totalMigrated}`);
+		console.log(`  Skipped   : ${totalSkipped} (already v2)`);
+		console.log(`  Failed    : ${totalFailed}`);
+
+		if (totalFailed > 0) {
+			console.error("[migrate] Migration completed with failures. Re-run to retry failed rows.");
+			process.exit(1);
+		} else {
+			console.log("[migrate] Migration complete. All encrypted rows are now using HKDF-derived key.");
+		}
 	}
 }
 
